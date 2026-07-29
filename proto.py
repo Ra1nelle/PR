@@ -61,7 +61,6 @@ def read_firebase_data(url):
     }
 
 def get_shared_system_state(base_url):
-    # Reads shared timer, baseline, and bill predictions from Firebase
     state_url = base_url.rsplit('/', 1)[0] + "/system_state.json"
     try:
         response = requests.get(state_url, timeout=3)
@@ -74,7 +73,6 @@ def get_shared_system_state(base_url):
     return None
 
 def update_shared_system_state(base_url, start_ts, baseline_kwh, prediction=None):
-    # Writes timer, baseline, and predictions directly to Firebase
     state_url = base_url.rsplit('/', 1)[0] + "/system_state.json"
     payload = {
         "start_timestamp": start_ts,
@@ -87,9 +85,9 @@ def update_shared_system_state(base_url, start_ts, baseline_kwh, prediction=None
         pass
 
 # -----------------------------------------------------------------------------
-# Real-Time Auto Refresh Setup
+# Real-Time Auto Refresh Setup (2000ms prevents heavy UI blinking)
 # -----------------------------------------------------------------------------
-st_autorefresh(interval=1000, limit=None, key="live_firebase_refresh")
+st_autorefresh(interval=2000, limit=None, key="live_firebase_refresh")
 
 # -----------------------------------------------------------------------------
 # App Header
@@ -126,7 +124,6 @@ if shared_state is not None:
     baseline_energy = float(shared_state.get("baseline_energy", 0.0))
     shared_prediction = shared_state.get("prediction", None)
 else:
-    # First-time fallback if state doesn't exist in Firebase yet
     start_timestamp = time.time()
     baseline_energy = raw_energy_val
     shared_prediction = None
@@ -135,7 +132,7 @@ else:
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔄 System Controls")
 
-# RESET BUTTON: Clears timers, baseline kWh, and predictions across ALL connected devices
+# RESET BUTTON
 if st.sidebar.button("🔄 Reset System, Timer & kWh", use_container_width=True):
     new_start_ts = time.time()
     new_baseline_kwh = raw_energy_val
@@ -151,7 +148,7 @@ mins = int((total_seconds % 3600) // 60)
 secs = int(total_seconds % 60)
 formatted_time = f"{hrs:02d}h {mins:02d}m {secs:02d}s"
 
-# Calculate Session Energy (Adjusted relative to the Firebase baseline)
+# Calculate Session Energy
 if raw_energy_val > 0.0:
     session_kwh = max(0.0, raw_energy_val - baseline_energy)
 else:
@@ -176,87 +173,92 @@ tab1, tab2, tab3 = st.tabs(["⚡ Live Telemetry", "📈 Consumption Trends", "�
 with tab1:
     st.subheader("📊 Live Telemetry & Operating Time")
     
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric("Voltage", f"{voltage_val:.1f} V")
-    m2.metric("Current", f"{current_val:.2f} A")
-    m3.metric("Active Power", f"{power_val:.1f} W")
-    m4.metric("Session Energy", f"{session_kwh:.4f} kWh")
-    m5.metric("Active Time", formatted_time)
-    m6.metric("Frequency", f"{freq_val:.1f} Hz")
+    # Placeholder container to stop metric flickering
+    metrics_placeholder = st.empty()
+    with metrics_placeholder.container():
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
+        m1.metric("Voltage", f"{voltage_val:.1f} V")
+        m2.metric("Current", f"{current_val:.2f} A")
+        m3.metric("Active Power", f"{power_val:.1f} W")
+        m4.metric("Session Energy", f"{session_kwh:.4f} kWh")
+        m5.metric("Active Time", formatted_time)
+        m6.metric("Frequency", f"{freq_val:.1f} Hz")
 
     st.markdown("---")
 
     col_gauge, col_cards = st.columns([1, 1])
 
     with col_gauge:
-        fig_gauge = go.Figure(go.Indicator(
-            mode="gauge+number",
-            value=power_val,
-            domain={'x': [0, 1], 'y': [0, 1]},
-            title={'text': "Active Load (Watts)", 'font': {'size': 16}},
-            gauge={
-                'axis': {'range': [0, 2500]},
-                'bar': {'color': "#2cc0e9"},
-                'steps': [
-                    {'range': [0, 500], 'color': "rgba(0, 255, 0, 0.15)"},
-                    {'range': [500, 1500], 'color': "rgba(255, 255, 0, 0.15)"},
-                    {'range': [1500, 2500], 'color': "rgba(255, 0, 0, 0.15)"}
-                ],
-                'threshold': {
-                    'line': {'color': "red", 'width': 4},
-                    'thickness': 0.75,
-                    'value': 2200
+        gauge_placeholder = st.empty()
+        with gauge_placeholder.container():
+            fig_gauge = go.Figure(go.Indicator(
+                mode="gauge+number",
+                value=power_val,
+                domain={'x': [0, 1], 'y': [0, 1]},
+                title={'text': "Active Load (Watts)", 'font': {'size': 16}},
+                gauge={
+                    'axis': {'range': [0, 2500]},
+                    'bar': {'color': "#2cc0e9"},
+                    'steps': [
+                        {'range': [0, 500], 'color': "rgba(0, 255, 0, 0.15)"},
+                        {'range': [500, 1500], 'color': "rgba(255, 255, 0, 0.15)"},
+                        {'range': [1500, 2500], 'color': "rgba(255, 0, 0, 0.15)"}
+                    ],
+                    'threshold': {
+                        'line': {'color': "red", 'width': 4},
+                        'thickness': 0.75,
+                        'value': 2200
+                    }
                 }
-            }
-        ))
-        fig_gauge.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)",
-            font={'color': "white"},
-            height=300,
-            margin=dict(l=20, r=20, t=60, b=20)
-        )
-        st.plotly_chart(fig_gauge, use_container_width=True)
+            ))
+            fig_gauge.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)",
+                font={'color': "white"},
+                height=300,
+                margin=dict(l=20, r=20, t=60, b=20),
+                transition={'duration': 500, 'easing': 'cubic-in-out'}
+            )
+            st.plotly_chart(fig_gauge, use_container_width=True, config={'displayModeBar': False})
 
     with col_cards:
         st.markdown("### Hardware Diagnostics & Automatic Monthly Predictor")
         
-        with st.container(border=True):
-            st.markdown(f"💰 **Live Session Energy Cost:** **₱{estimated_cost:.2f}**")
-            st.caption(f"Calculated using ₱{kwh_rate:.2f}/kWh against session energy ({session_kwh:.4f} kWh)")
+        cards_placeholder = st.empty()
+        with cards_placeholder.container():
+            with st.container(border=True):
+                st.markdown(f"💰 **Live Session Energy Cost:** **₱{estimated_cost:.2f}**")
+                st.caption(f"Calculated using ₱{kwh_rate:.2f}/kWh against session energy ({session_kwh:.4f} kWh)")
 
-        with st.container(border=True):
-            # PREDICT BUTTON: Calculates prediction and saves it to Firebase
-            if st.button("⚡ Predict Monthly Bill from Live Load", use_container_width=True):
-                daily_kwh = (power_val * 24.0) / 1000.0
-                monthly_kwh = daily_kwh * 30.0
-                monthly_cost = monthly_kwh * kwh_rate
-                
-                new_prediction = {
-                    "power_w": power_val,
-                    "daily_kwh": daily_kwh,
-                    "monthly_kwh": monthly_kwh,
-                    "monthly_cost": monthly_cost
-                }
-                
-                # Push the new prediction to Firebase so phone updates immediately
-                update_shared_system_state(firebase_url, start_timestamp, baseline_energy, new_prediction)
-                st.rerun()
+            with st.container(border=True):
+                if st.button("⚡ Predict Monthly Bill from Live Load", use_container_width=True):
+                    daily_kwh = (power_val * 24.0) / 1000.0
+                    monthly_kwh = daily_kwh * 30.0
+                    monthly_cost = monthly_kwh * kwh_rate
+                    
+                    new_prediction = {
+                        "power_w": power_val,
+                        "daily_kwh": daily_kwh,
+                        "monthly_kwh": monthly_kwh,
+                        "monthly_cost": monthly_cost
+                    }
+                    
+                    update_shared_system_state(firebase_url, start_timestamp, baseline_energy, new_prediction)
+                    st.rerun()
 
-            # Display prediction fetched directly from shared Firebase state
-            if shared_prediction is not None and isinstance(shared_prediction, dict):
-                p_res = shared_prediction
-                st.markdown(f"📅 **Predicted Monthly Bill:** **₱{float(p_res.get('monthly_cost', 0.0)):,.2f}**")
-                st.caption(f"Based on live load ({float(p_res.get('power_w', 0.0)):.1f}W) running 24 hrs/day for 30 days @ ₱{kwh_rate:.2f}/kWh")
-            else:
-                st.markdown("📅 **Predicted Monthly Bill:** *Not calculated yet*")
-                st.caption("Click the button above to generate a prediction based on existing live telemetry.")
+                if shared_prediction is not None and isinstance(shared_prediction, dict):
+                    p_res = shared_prediction
+                    st.markdown(f"📅 **Predicted Monthly Bill:** **₱{float(p_res.get('monthly_cost', 0.0)):,.2f}**")
+                    st.caption(f"Based on live load ({float(p_res.get('power_w', 0.0)):.1f}W) running 24 hrs/day for 30 days @ ₱{kwh_rate:.2f}/kWh")
+                else:
+                    st.markdown("📅 **Predicted Monthly Bill:** *Not calculated yet*")
+                    st.caption("Click the button above to generate a prediction based on existing live telemetry.")
 
-        with st.container(border=True):
-            if pzem_data["connected"]:
-                st.success(f"🔌 **Firebase Telemetry:** CONNECTED & SYNCED")
-            else:
-                st.error(f"🔌 **Firebase Telemetry:** DISCONNECTED / SEARCHING")
-            st.caption("Polling live JSON data directly from Firebase Realtime Database")
+            with st.container(border=True):
+                if pzem_data["connected"]:
+                    st.success(f"🔌 **Firebase Telemetry:** CONNECTED & SYNCED")
+                else:
+                    st.error(f"🔌 **Firebase Telemetry:** DISCONNECTED / SEARCHING")
+                st.caption("Polling live JSON data directly from Firebase Realtime Database")
 
 # --- TAB 2: CONSUMPTION TRENDS ---
 with tab2:
