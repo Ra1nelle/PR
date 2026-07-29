@@ -87,7 +87,7 @@ def update_shared_system_state(base_url, start_ts, baseline_kwh, prediction=None
 # -----------------------------------------------------------------------------
 # Real-Time Auto Refresh Setup (2000ms prevents heavy UI blinking)
 # -----------------------------------------------------------------------------
-st_autorefresh(interval=2000, limit=None, key="live_firebase_refresh")
+st_autorefresh(interval=1000, limit=None, key="live_firebase_refresh")
 
 # -----------------------------------------------------------------------------
 # App Header
