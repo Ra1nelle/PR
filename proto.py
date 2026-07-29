@@ -72,12 +72,13 @@ def get_shared_system_state(base_url):
         pass
     return None
 
-def update_shared_system_state(base_url, start_ts, baseline_kwh, kwh_rate):
+def update_shared_system_state(base_url, start_ts, baseline_kwh, kwh_rate, reset_flag=False):
     state_url = base_url.rsplit('/', 1)[0] + "/system_state.json"
     payload = {
         "start_timestamp": start_ts,
         "baseline_energy": baseline_kwh,
-        "kwh_rate": kwh_rate
+        "kwh_rate": kwh_rate,
+        "is_reset": reset_flag
     }
     try:
         requests.put(state_url, json=payload, timeout=3)
@@ -122,11 +123,13 @@ if shared_state is not None:
     start_timestamp = float(shared_state.get("start_timestamp", time.time()))
     baseline_energy = float(shared_state.get("baseline_energy", 0.0))
     shared_kwh_rate = float(shared_state.get("kwh_rate", 11.50))
+    is_reset = bool(shared_state.get("is_reset", False))
 else:
     start_timestamp = time.time()
     baseline_energy = raw_energy_val
     shared_kwh_rate = 11.50
-    update_shared_system_state(firebase_url, start_timestamp, baseline_energy, shared_kwh_rate)
+    is_reset = False
+    update_shared_system_state(firebase_url, start_timestamp, baseline_energy, shared_kwh_rate, False)
 
 # Shared Rate Input
 kwh_rate = st.sidebar.number_input(
@@ -138,16 +141,16 @@ kwh_rate = st.sidebar.number_input(
 
 # Detect if user changed the rate on this panel and push to Firebase
 if kwh_rate != shared_kwh_rate:
-    update_shared_system_state(firebase_url, start_timestamp, baseline_energy, kwh_rate)
+    update_shared_system_state(firebase_url, start_timestamp, baseline_energy, kwh_rate, is_reset)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔄 System Controls")
 
-# RESET BUTTON: Resets timers, baseline kWh across ALL connected devices
+# RESET BUTTON: Resets timers, baseline kWh, and resets monthly bill prediction
 if st.sidebar.button("🔄 Reset System, Timer & kWh", use_container_width=True):
     new_start_ts = time.time()
     new_baseline_kwh = raw_energy_val
-    update_shared_system_state(firebase_url, new_start_ts, new_baseline_kwh, kwh_rate)
+    update_shared_system_state(firebase_url, new_start_ts, new_baseline_kwh, kwh_rate, reset_flag=True)
     st.rerun()
 
 # Total Elapsed Seconds calculation using Firebase shared timestamp
@@ -167,10 +170,13 @@ else:
 
 estimated_cost = session_kwh * kwh_rate
 
-# Live dynamic monthly prediction (Calculates instantly on every 2-second refresh)
-live_daily_kwh = (power_val * 24.0) / 1000.0
-live_monthly_kwh = live_daily_kwh * 30.0
-live_predicted_cost = live_monthly_kwh * kwh_rate
+# Calculate predicted cost based on reset state
+if is_reset and session_kwh == 0.0 and power_val == 0.0:
+    live_predicted_cost = 0.0
+else:
+    live_daily_kwh = (power_val * 24.0) / 1000.0
+    live_monthly_kwh = live_daily_kwh * 30.0
+    live_predicted_cost = live_monthly_kwh * kwh_rate
 
 # -----------------------------------------------------------------------------
 # Mock Historical Data Setup
@@ -245,12 +251,12 @@ with tab1:
                 st.caption(f"Calculated using ₱{kwh_rate:.2f}/kWh against session energy ({session_kwh:.4f} kWh)")
 
             with st.container(border=True):
-                if power_val > 0.0:
+                if live_predicted_cost > 0.0:
                     st.markdown(f"📅 **Live Predicted Monthly Bill:** **₱{live_predicted_cost:,.2f}**")
                     st.caption(f"Dynamically calculated based on real-time load ({power_val:.1f} W) running 24/7 @ ₱{kwh_rate:.2f}/kWh")
                 else:
                     st.markdown("📅 **Live Predicted Monthly Bill:** **₱0.00**")
-                    st.caption("No active load detected from PZEM sensor.")
+                    st.caption("System reset or no active load detected.")
 
             with st.container(border=True):
                 if pzem_data["connected"]:
