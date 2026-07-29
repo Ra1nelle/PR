@@ -30,7 +30,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# Firebase Realtime Database Reader Function
+# Firebase Realtime Database Functions (Central Shared Storage)
 # -----------------------------------------------------------------------------
 def read_firebase_data(url):
     try:
@@ -60,18 +60,31 @@ def read_firebase_data(url):
         "pf": 0.0
     }
 
-# -----------------------------------------------------------------------------
-# Session State Initialization
-# -----------------------------------------------------------------------------
-if 'start_timestamp' not in st.session_state:
-    st.session_state.start_timestamp = time.time()
+def get_shared_system_state(base_url):
+    # Reads shared timer, baseline, and bill predictions from Firebase
+    state_url = base_url.rsplit('/', 1)[0] + "/system_state.json"
+    try:
+        response = requests.get(state_url, timeout=3)
+        if response.status_code == 200:
+            data = response.json()
+            if data and isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return None
 
-if 'auto_bill_prediction' not in st.session_state:
-    st.session_state.auto_bill_prediction = None
-
-# Baseline energy offset to allow resetting session kWh
-if 'baseline_energy' not in st.session_state:
-    st.session_state.baseline_energy = 0.0
+def update_shared_system_state(base_url, start_ts, baseline_kwh, prediction=None):
+    # Writes timer, baseline, and predictions directly to Firebase
+    state_url = base_url.rsplit('/', 1)[0] + "/system_state.json"
+    payload = {
+        "start_timestamp": start_ts,
+        "baseline_energy": baseline_kwh,
+        "prediction": prediction
+    }
+    try:
+        requests.put(state_url, json=payload, timeout=3)
+    except Exception:
+        pass
 
 # -----------------------------------------------------------------------------
 # Real-Time Auto Refresh Setup
@@ -82,7 +95,7 @@ st_autorefresh(interval=1000, limit=None, key="live_firebase_refresh")
 # App Header
 # -----------------------------------------------------------------------------
 st.title("⚡ web ng mga kupal na og")
-st.caption("ESP32 + FIREBASE MODE — Live Telemetry & Meralco Cost Monitor")
+st.caption("ESP32 + FIREBASE MODE — Fully Synchronized Telemetry & Bill Predictor")
 
 # -----------------------------------------------------------------------------
 # Sidebar Controls & Cloud Configuration
@@ -94,7 +107,7 @@ firebase_url = st.sidebar.text_input(
 )
 kwh_rate = st.sidebar.number_input("Electricity Rate (₱/kWh)", value=11.50, step=0.10)
 
-# Fetch data directly from Firebase Cloud DB
+# Fetch sensor telemetry from Firebase
 pzem_data = read_firebase_data(firebase_url)
 
 # Raw cloud values
@@ -105,18 +118,32 @@ raw_energy_val = pzem_data["energy"]
 freq_val = pzem_data["frequency"]
 pf_val = pzem_data["pf"]
 
+# Fetch shared system state & shared predictions from Firebase
+shared_state = get_shared_system_state(firebase_url)
+
+if shared_state is not None:
+    start_timestamp = float(shared_state.get("start_timestamp", time.time()))
+    baseline_energy = float(shared_state.get("baseline_energy", 0.0))
+    shared_prediction = shared_state.get("prediction", None)
+else:
+    # First-time fallback if state doesn't exist in Firebase yet
+    start_timestamp = time.time()
+    baseline_energy = raw_energy_val
+    shared_prediction = None
+    update_shared_system_state(firebase_url, start_timestamp, baseline_energy, None)
+
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔄 System Controls")
 
-# RESET BUTTON: Resets timestamp, stores current Firebase kWh as baseline, wipes predictions
+# RESET BUTTON: Clears timers, baseline kWh, and predictions across ALL connected devices
 if st.sidebar.button("🔄 Reset System, Timer & kWh", use_container_width=True):
-    st.session_state.start_timestamp = time.time()
-    st.session_state.baseline_energy = raw_energy_val  # Save current energy level as baseline
-    st.session_state.auto_bill_prediction = None
+    new_start_ts = time.time()
+    new_baseline_kwh = raw_energy_val
+    update_shared_system_state(firebase_url, new_start_ts, new_baseline_kwh, None)
     st.rerun()
 
-# Total Elapsed Seconds calculation
-total_seconds = max(0.0, time.time() - st.session_state.start_timestamp)
+# Total Elapsed Seconds calculation using Firebase shared timestamp
+total_seconds = max(0.0, time.time() - start_timestamp)
 
 # Formatted runtime
 hrs = int(total_seconds // 3600)
@@ -124,9 +151,9 @@ mins = int((total_seconds % 3600) // 60)
 secs = int(total_seconds % 60)
 formatted_time = f"{hrs:02d}h {mins:02d}m {secs:02d}s"
 
-# Calculate Session Energy (Adjusted relative to the reset baseline)
+# Calculate Session Energy (Adjusted relative to the Firebase baseline)
 if raw_energy_val > 0.0:
-    session_kwh = max(0.0, raw_energy_val - st.session_state.baseline_energy)
+    session_kwh = max(0.0, raw_energy_val - baseline_energy)
 else:
     session_kwh = (power_val * (total_seconds / 3600.0)) / 1000.0
 
@@ -198,29 +225,35 @@ with tab1:
             st.caption(f"Calculated using ₱{kwh_rate:.2f}/kWh against session energy ({session_kwh:.4f} kWh)")
 
         with st.container(border=True):
+            # PREDICT BUTTON: Calculates prediction and saves it to Firebase
             if st.button("⚡ Predict Monthly Bill from Live Load", use_container_width=True):
                 daily_kwh = (power_val * 24.0) / 1000.0
                 monthly_kwh = daily_kwh * 30.0
                 monthly_cost = monthly_kwh * kwh_rate
                 
-                st.session_state.auto_bill_prediction = {
+                new_prediction = {
                     "power_w": power_val,
                     "daily_kwh": daily_kwh,
                     "monthly_kwh": monthly_kwh,
                     "monthly_cost": monthly_cost
                 }
+                
+                # Push the new prediction to Firebase so phone updates immediately
+                update_shared_system_state(firebase_url, start_timestamp, baseline_energy, new_prediction)
+                st.rerun()
 
-            if st.session_state.auto_bill_prediction is not None:
-                p_res = st.session_state.auto_bill_prediction
-                st.markdown(f"📅 **Predicted Monthly Bill:** **₱{p_res['monthly_cost']:,.2f}**")
-                st.caption(f"Based on current live load ({p_res['power_w']:.1f}W) running 24 hrs/day for 30 days @ ₱{kwh_rate:.2f}/kWh")
+            # Display prediction fetched directly from shared Firebase state
+            if shared_prediction is not None and isinstance(shared_prediction, dict):
+                p_res = shared_prediction
+                st.markdown(f"📅 **Predicted Monthly Bill:** **₱{float(p_res.get('monthly_cost', 0.0)):,.2f}**")
+                st.caption(f"Based on live load ({float(p_res.get('power_w', 0.0)):.1f}W) running 24 hrs/day for 30 days @ ₱{kwh_rate:.2f}/kWh")
             else:
                 st.markdown("📅 **Predicted Monthly Bill:** *Not calculated yet*")
                 st.caption("Click the button above to generate a prediction based on existing live telemetry.")
 
         with st.container(border=True):
             if pzem_data["connected"]:
-                st.success(f"🔌 **Firebase Telemetry:** CONNECTED")
+                st.success(f"🔌 **Firebase Telemetry:** CONNECTED & SYNCED")
             else:
                 st.error(f"🔌 **Firebase Telemetry:** DISCONNECTED / SEARCHING")
             st.caption("Polling live JSON data directly from Firebase Realtime Database")
