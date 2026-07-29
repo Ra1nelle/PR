@@ -63,18 +63,15 @@ def read_firebase_data(url):
 # -----------------------------------------------------------------------------
 # Session State Initialization
 # -----------------------------------------------------------------------------
-if 'timer_running' not in st.session_state:
-    st.session_state.timer_running = False
-
 if 'start_timestamp' not in st.session_state:
-    st.session_state.start_timestamp = None
+    st.session_state.start_timestamp = time.time()
 
-if 'accumulated_seconds' not in st.session_state:
-    st.session_state.accumulated_seconds = 0.0
-
-# Persistent state for automatic live monthly bill prediction
 if 'auto_bill_prediction' not in st.session_state:
     st.session_state.auto_bill_prediction = None
+
+# Baseline energy offset to allow resetting session kWh
+if 'baseline_energy' not in st.session_state:
+    st.session_state.baseline_energy = 0.0
 
 # -----------------------------------------------------------------------------
 # Real-Time Auto Refresh Setup
@@ -100,38 +97,26 @@ kwh_rate = st.sidebar.number_input("Electricity Rate (₱/kWh)", value=11.50, st
 # Fetch data directly from Firebase Cloud DB
 pzem_data = read_firebase_data(firebase_url)
 
+# Raw cloud values
+voltage_val = pzem_data["voltage"]
+current_val = pzem_data["current"]
+power_val = pzem_data["power"]
+raw_energy_val = pzem_data["energy"]
+freq_val = pzem_data["frequency"]
+pf_val = pzem_data["pf"]
+
 st.sidebar.markdown("---")
-st.sidebar.subheader("⏱️ Hardware Runtime Timer")
+st.sidebar.subheader("🔄 System Controls")
 
-col_btn1, col_btn2, col_btn3 = st.sidebar.columns(3)
+# RESET BUTTON: Resets timestamp, stores current Firebase kWh as baseline, wipes predictions
+if st.sidebar.button("🔄 Reset System, Timer & kWh", use_container_width=True):
+    st.session_state.start_timestamp = time.time()
+    st.session_state.baseline_energy = raw_energy_val  # Save current energy level as baseline
+    st.session_state.auto_bill_prediction = None
+    st.rerun()
 
-with col_btn1:
-    if st.button("▶️ Start"):
-        if not st.session_state.timer_running:
-            st.session_state.timer_running = True
-            st.session_state.start_timestamp = time.time()
-            st.rerun()
-
-with col_btn2:
-    if st.button("⏸️ Pause"):
-        if st.session_state.timer_running:
-            st.session_state.timer_running = False
-            st.session_state.accumulated_seconds += (time.time() - st.session_state.start_timestamp)
-            st.session_state.start_timestamp = None
-            st.rerun()
-
-with col_btn3:
-    if st.button("🔄 Reset"):
-        st.session_state.timer_running = False
-        st.session_state.start_timestamp = None
-        st.session_state.accumulated_seconds = 0.0
-        st.session_state.auto_bill_prediction = None
-        st.rerun()
-
-# Calculate Total Elapsed Seconds across refreshes
-total_seconds = st.session_state.accumulated_seconds
-if st.session_state.timer_running and st.session_state.start_timestamp is not None:
-    total_seconds += (time.time() - st.session_state.start_timestamp)
+# Total Elapsed Seconds calculation
+total_seconds = max(0.0, time.time() - st.session_state.start_timestamp)
 
 # Formatted runtime
 hrs = int(total_seconds // 3600)
@@ -139,16 +124,12 @@ mins = int((total_seconds % 3600) // 60)
 secs = int(total_seconds % 60)
 formatted_time = f"{hrs:02d}h {mins:02d}m {secs:02d}s"
 
-# Sensor readings from cloud
-voltage_val = pzem_data["voltage"]
-current_val = pzem_data["current"]
-power_val = pzem_data["power"]
-energy_val = pzem_data["energy"]
-freq_val = pzem_data["frequency"]
-pf_val = pzem_data["pf"]
+# Calculate Session Energy (Adjusted relative to the reset baseline)
+if raw_energy_val > 0.0:
+    session_kwh = max(0.0, raw_energy_val - st.session_state.baseline_energy)
+else:
+    session_kwh = (power_val * (total_seconds / 3600.0)) / 1000.0
 
-# Cost computation based on hardware kWh reading or calculated power over active timer
-session_kwh = energy_val if energy_val > 0.0 else (power_val * (total_seconds / 3600.0)) / 1000.0
 estimated_cost = session_kwh * kwh_rate
 
 # -----------------------------------------------------------------------------
@@ -172,7 +153,7 @@ with tab1:
     m1.metric("Voltage", f"{voltage_val:.1f} V")
     m2.metric("Current", f"{current_val:.2f} A")
     m3.metric("Active Power", f"{power_val:.1f} W")
-    m4.metric("Energy", f"{energy_val:.4f} kWh")
+    m4.metric("Session Energy", f"{session_kwh:.4f} kWh")
     m5.metric("Active Time", formatted_time)
     m6.metric("Frequency", f"{freq_val:.1f} Hz")
 
@@ -214,12 +195,10 @@ with tab1:
         
         with st.container(border=True):
             st.markdown(f"💰 **Live Session Energy Cost:** **₱{estimated_cost:.2f}**")
-            st.caption(f"Calculated using ₱{kwh_rate:.2f}/kWh against total energy ({session_kwh:.4f} kWh)")
+            st.caption(f"Calculated using ₱{kwh_rate:.2f}/kWh against session energy ({session_kwh:.4f} kWh)")
 
         with st.container(border=True):
-            # AUTOMATIC MONTHLY BILL PREDICTION TRIGGER
             if st.button("⚡ Predict Monthly Bill from Live Load", use_container_width=True):
-                # Calculate daily energy in kWh based on live power output
                 daily_kwh = (power_val * 24.0) / 1000.0
                 monthly_kwh = daily_kwh * 30.0
                 monthly_cost = monthly_kwh * kwh_rate
