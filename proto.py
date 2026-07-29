@@ -72,11 +72,12 @@ def get_shared_system_state(base_url):
         pass
     return None
 
-def update_shared_system_state(base_url, start_ts, baseline_kwh, prediction=None):
+def update_shared_system_state(base_url, start_ts, baseline_kwh, kwh_rate, prediction=None):
     state_url = base_url.rsplit('/', 1)[0] + "/system_state.json"
     payload = {
         "start_timestamp": start_ts,
         "baseline_energy": baseline_kwh,
+        "kwh_rate": kwh_rate,
         "prediction": prediction
     }
     try:
@@ -85,15 +86,15 @@ def update_shared_system_state(base_url, start_ts, baseline_kwh, prediction=None
         pass
 
 # -----------------------------------------------------------------------------
-# Real-Time Auto Refresh Setup (2000ms prevents heavy UI blinking)
+# Real-Time Auto Refresh Setup (2000ms prevents UI blinking)
 # -----------------------------------------------------------------------------
-st_autorefresh(interval=10000, limit=None, key="live_firebase_refresh")
+st_autorefresh(interval=2000, limit=None, key="live_firebase_refresh")
 
 # -----------------------------------------------------------------------------
 # App Header
 # -----------------------------------------------------------------------------
 st.title("⚡ web ng mga kupal na og")
-st.caption("ESP32 + FIREBASE MODE — Fully Synchronized Telemetry & Bill Predictor")
+st.caption("ESP32 + FIREBASE MODE — Fully Synchronized Telemetry & Settings")
 
 # -----------------------------------------------------------------------------
 # Sidebar Controls & Cloud Configuration
@@ -103,7 +104,6 @@ firebase_url = st.sidebar.text_input(
     "Firebase Realtime DB URL", 
     value="https://prnamin-8823e-default-rtdb.asia-southeast1.firebasedatabase.app/sensor_data.json"
 )
-kwh_rate = st.sidebar.number_input("Electricity Rate (₱/kWh)", value=11.50, step=0.10)
 
 # Fetch sensor telemetry from Firebase
 pzem_data = read_firebase_data(firebase_url)
@@ -116,27 +116,41 @@ raw_energy_val = pzem_data["energy"]
 freq_val = pzem_data["frequency"]
 pf_val = pzem_data["pf"]
 
-# Fetch shared system state & shared predictions from Firebase
+# Fetch shared system state, predictions, and rates from Firebase
 shared_state = get_shared_system_state(firebase_url)
 
 if shared_state is not None:
     start_timestamp = float(shared_state.get("start_timestamp", time.time()))
     baseline_energy = float(shared_state.get("baseline_energy", 0.0))
+    shared_kwh_rate = float(shared_state.get("kwh_rate", 11.50))
     shared_prediction = shared_state.get("prediction", None)
 else:
     start_timestamp = time.time()
     baseline_energy = raw_energy_val
+    shared_kwh_rate = 11.50
     shared_prediction = None
-    update_shared_system_state(firebase_url, start_timestamp, baseline_energy, None)
+    update_shared_system_state(firebase_url, start_timestamp, baseline_energy, shared_kwh_rate, None)
+
+# Shared Rate Input
+kwh_rate = st.sidebar.number_input(
+    "Electricity Rate (₱/kWh)", 
+    value=shared_kwh_rate, 
+    step=0.10,
+    key="kwh_rate_input"
+)
+
+# Detect if user changed the rate on this panel and push to Firebase
+if kwh_rate != shared_kwh_rate:
+    update_shared_system_state(firebase_url, start_timestamp, baseline_energy, kwh_rate, shared_prediction)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔄 System Controls")
 
-# RESET BUTTON
+# RESET BUTTON: Resets timers, baseline kWh, and predictions across ALL connected devices
 if st.sidebar.button("🔄 Reset System, Timer & kWh", use_container_width=True):
     new_start_ts = time.time()
     new_baseline_kwh = raw_energy_val
-    update_shared_system_state(firebase_url, new_start_ts, new_baseline_kwh, None)
+    update_shared_system_state(firebase_url, new_start_ts, new_baseline_kwh, kwh_rate, None)
     st.rerun()
 
 # Total Elapsed Seconds calculation using Firebase shared timestamp
@@ -173,7 +187,6 @@ tab1, tab2, tab3 = st.tabs(["⚡ Live Telemetry", "📈 Consumption Trends", "�
 with tab1:
     st.subheader("📊 Live Telemetry & Operating Time")
     
-    # Placeholder container to stop metric flickering
     metrics_placeholder = st.empty()
     with metrics_placeholder.container():
         m1, m2, m3, m4, m5, m6 = st.columns(6)
@@ -242,7 +255,7 @@ with tab1:
                         "monthly_cost": monthly_cost
                     }
                     
-                    update_shared_system_state(firebase_url, start_timestamp, baseline_energy, new_prediction)
+                    update_shared_system_state(firebase_url, start_timestamp, baseline_energy, kwh_rate, new_prediction)
                     st.rerun()
 
                 if shared_prediction is not None and isinstance(shared_prediction, dict):
